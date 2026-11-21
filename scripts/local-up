@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+revision=$(cat api-revision)
+[[ $revision =~ ^[a-f0-9]{40}$ ]]
+source_dir=$(mktemp -d)
+trap 'rm -rf "$source_dir"' EXIT
+git -C "$source_dir" init -q
+git -C "$source_dir" fetch -q --depth=1 https://github.com/nikit0id/portfolio-api.git "$revision"
+git -C "$source_dir" checkout -q --detach FETCH_HEAD
+export API_IMAGE="portfolio-api:$revision"
+docker build -t "$API_IMAGE" "$source_dir"
+docker compose --project-directory deploy up -d --wait
