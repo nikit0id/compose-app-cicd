@@ -1,4 +1,4 @@
 image:
   repository: ghcr.io/nikit0id/portfolio-api
-  tag: "64ae253f2489974334abc135cba672e059619f79"
-  digest: "sha256:46a27ca84967a84ecf6de27e0457e0cf163ff677e1df806d274db071febda60a"
+  tag: "bb08de895c0db4bbf5a9f794ec4d3a7ed29ad214"
+  digest: "sha256:16fc14d6176390f223fbad820d9f209e79c44f5060500fe6f665ae5775a32d0a"
