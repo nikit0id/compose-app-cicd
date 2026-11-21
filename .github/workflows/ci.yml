@@ -155,3 +155,39 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "/opt/portfolio/$TARGET/deploy/release '$IMAGE'"
+  promote:
+    needs: [publish, rehearsal]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: portfolio-gitops-values
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record the rehearsed image for Argo CD
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: |
+          set -euo pipefail
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ $latest != "$GITHUB_SHA" ]]; then
+            echo 'A newer main commit will promote its own image'
+            exit 0
+          fi
+          digest=${IMAGE##*@}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          if git ls-remote --exit-code origin refs/heads/gitops-values >/dev/null; then
+            git fetch --depth=1 origin refs/heads/gitops-values
+            git switch -c gitops-values FETCH_HEAD
+          else
+            git switch --orphan gitops-values
+          fi
+          printf 'image:\n  repository: ghcr.io/nikit0id/portfolio-api\n  tag: "%s"\n  digest: "%s"\n' \
+            "$GITHUB_SHA" "$digest" > portfolio-values.yaml
+          git add portfolio-values.yaml
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Promote verified portfolio API release $GITHUB_SHA"
+          git push origin HEAD:refs/heads/gitops-values
