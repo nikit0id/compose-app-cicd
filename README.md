@@ -37,6 +37,8 @@ git clone https://github.com/nikit0id/compose-app-cicd && cd compose-app-cicd
 - Caddy получает сертификат при включённом профиле https. /metrics доступен внутри сети Compose и через порт на loopback.
 - Откат переключает образ приложения. Для будущих миграций схемы потребуется отдельная политика совместимости.
 
+После проверки на временной ВМ job promote записывает SHA-тег и digest в portfolio-values.yaml ветки [gitops-values](https://github.com/nikit0id/compose-app-cicd/tree/gitops-values). Argo CD в [kubernetes-ops-lab](https://github.com/nikit0id/kubernetes-ops-lab) соединяет этот файл с Helm chart. Для записи в отдельный репозиторий дополнительный токен не требуется.
+
 ## Подготовка VPS и GitHub Environments
 
 1. На каждом сервере установите Docker с Compose v2, curl, Git, Bash, OpenSSL и flock. Клонируйте репозиторий в `/opt/portfolio/staging` либо `/opt/portfolio/production`. Запустите там `scripts/init-env`. У пользователя деплоя должен быть доступ к Docker и файлам релиза. При изменении deploy/ обновите этот checkout до проверенной версии перед выпуском.
