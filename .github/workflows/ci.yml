@@ -1,0 +1,157 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        type: choice
+        options: [staging, production]
+        required: true
+        description: Deployment environment
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.revision.outputs.sha }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: portfolio
+        ports: ["127.0.0.1:5432:5432"]
+        options: --health-cmd pg_isready --health-interval 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: revision
+        run: |
+          ref=$(cat api-revision)
+          [[ $ref =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: nikit0id/portfolio-api
+          ref: ${{ steps.revision.outputs.sha }}
+          path: api-src
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - working-directory: api-src
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGDATABASE: portfolio
+        run: |
+          python -m pip install -r requirements-dev.txt
+          ruff check .
+          python -m pytest -q
+          docker run --rm -i hadolint/hadolint:v2.14.0-alpine < Dockerfile
+      - run: |
+          shellcheck deploy/release scripts/*
+          scripts/init-env
+          API_IMAGE=portfolio-api:check docker compose --project-directory deploy --profile https config --quiet
+          docker build --tag portfolio-api:check api-src
+  publish:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.push.outputs.pinned }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: nikit0id/portfolio-api
+          ref: ${{ needs.verify.outputs.source }}
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        env:
+          SOURCE_SHA: ${{ needs.verify.outputs.source }}
+        run: |
+          image="ghcr.io/nikit0id/portfolio-api:$GITHUB_SHA"
+          docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" -t "$image" .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: Scan the release before publishing it
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          docker save "$IMAGE" -o "$RUNNER_TEMP/release.tar"
+          docker run --rm -v "$RUNNER_TEMP/release.tar:/release.tar:ro" \
+            aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
+            image --input /release.tar --scanners vuln --severity CRITICAL --exit-code 1
+      - id: push
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          docker push "$IMAGE"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+          digest=${digest##*@}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "pinned=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+  rehearsal:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy to the runner over SSH and check health
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+        run: scripts/runner-deploy "$IMAGE"
+  deploy:
+    needs: [publish, rehearsal]
+    if: github.event_name == 'workflow_dispatch' || vars.STAGING_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target || 'staging' }}
+    concurrency:
+      group: deploy-${{ inputs.target || 'staging' }}
+      cancel-in-progress: false
+    steps:
+      - name: Verify the production approval rule
+        if: inputs.target == 'production'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/production" \
+            --jq '.protection_rules[] | select(.type=="required_reviewers") | .reviewers | length' | grep -Eq '^[1-9][0-9]*$'
+      - name: Deploy over verified SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          TARGET: ${{ inputs.target || 'staging' }}
+        run: |
+          set -eu
+          [[ $VPS_USER =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ $VPS_HOST =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ $TARGET == staging || $TARGET == production ]]
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "/opt/portfolio/$TARGET/deploy/release '$IMAGE'"

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Exercise the SSH release on a fresh GitHub-hosted Ubuntu VM.
+set -euo pipefail
+image=${1:?Pass a scanned image digest}
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+ssh-keygen -q -t ed25519 -N '' -f "$tmp/client"
+ssh-keygen -q -t ed25519 -N '' -f "$tmp/host"
+awk '{print "[127.0.0.1]:2222", $1, $2}' "$tmp/host.pub" > "$tmp/known_hosts"
+cat > "$tmp/sshd_config" <<CONFIG
+Port 2222
+ListenAddress 127.0.0.1
+HostKey $tmp/host
+AuthorizedKeysFile $tmp/client.pub
+PidFile $tmp/sshd.pid
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UsePAM yes
+AllowUsers $(id -un)
+CONFIG
+sudo install -d -m 0755 /run/sshd
+sudo /usr/sbin/sshd -f "$tmp/sshd_config"
+scripts/init-env
+ssh -i "$tmp/client" -p 2222 -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$tmp/known_hosts" \
+    "$(id -un)@127.0.0.1" "'$PWD/deploy/release' '$image'"
+curl --fail --silent --show-error http://127.0.0.1:18080/health
+test "$(cat deploy/.current)" = "$image"
