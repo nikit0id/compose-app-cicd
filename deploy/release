@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+candidate=${1:?Usage: release IMAGE}
+if [[ ! $candidate =~ ^[a-z0-9./_-]+:[a-f0-9]{40}$ ]]; then
+    echo 'Expected a repository and a full commit SHA tag' >&2
+    exit 2
+fi
+exec 9>.deploy.lock
+flock -x 9
+previous=
+if [[ -f .current ]]; then read -r previous < .current; fi
+export API_IMAGE="$candidate"
+# Fail before changing services if the release cannot be downloaded.
+docker compose pull
+start_release() {
+    docker compose up -d --wait --wait-timeout 90 || return 1
+    local address
+    address=$(docker compose port api 8000) || return 1
+    curl --fail --silent --show-error --max-time 5 "http://$address/health" || return 1
+    if [[ -n ${PUBLIC_HEALTH_URL:-} ]]; then
+        curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 10 "$PUBLIC_HEALTH_URL" || return 1
+    fi
+}
+if start_release; then
+    printf '%s\n' "$candidate" > .current.new
+    mv .current.new .current
+else
+    if [[ -n $previous ]]; then
+        export API_IMAGE="$previous"
+        start_release || { echo 'Rollback failed' >&2; exit 2; }
+        echo "Restored $previous" >&2
+    else
+        echo 'First deployment failed; no earlier release exists' >&2
+    fi
+    exit 1
+fi
