@@ -1,0 +1,51 @@
+name: Verify published image on kind
+on: workflow_dispatch
+permissions:
+  contents: read
+  packages: read
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: nikit0id/kubernetes-ops-lab
+          ref: main
+          persist-credentials: false
+      - name: Install kind
+        run: |
+          cd "$RUNNER_TEMP"
+          base=https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0
+          curl -fsSLO "$base/kind-linux-amd64"
+          curl -fsSLO "$base/kind-linux-amd64.sha256sum"
+          sha256sum --check kind-linux-amd64.sha256sum
+          mkdir -p "$RUNNER_TEMP/tools"
+          install -m 0755 kind-linux-amd64 "$RUNNER_TEMP/tools/kind"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Deploy the release selected by Argo CD
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+          PORTFOLIO_IMAGE_MODE: registry
+        run: |
+          umask 077
+          auth=$(mktemp -d)
+          trap 'rm -rf "$auth"' EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker --config "$auth" login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          export PORTFOLIO_DOCKER_CONFIG="$auth/config.json"
+          scripts/portfolio-up
+          export KUBECONFIG="$PWD/portfolio/.lab/kubeconfig"
+          kubectl -n portfolio port-forward svc/portfolio-api 18087:80 >"$RUNNER_TEMP/forward.log" 2>&1 &
+          curl -fsS --retry 12 --retry-connrefused --retry-delay 1 http://127.0.0.1:18087/health | jq -e '.status=="ok"'
+          kubectl -n portfolio get deploy portfolio-api -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+          kubectl -n argocd get app portfolio -o=jsonpath='{.status.sync.revisions}{"\n"}'
+          kubectl -n portfolio get all
+      - name: Collect cluster diagnostics
+        if: failure()
+        env:
+          KUBECONFIG: ${{ github.workspace }}/portfolio/.lab/kubeconfig
+        run: |
+          kubectl get pods -A -o wide
+          kubectl -n argocd get app portfolio -o yaml || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -60

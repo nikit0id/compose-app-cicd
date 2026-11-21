@@ -56,3 +56,5 @@ git clone https://github.com/nikit0id/compose-app-cicd && cd compose-app-cicd
 
 - Добавить проверку обратной совместимости схемы при появлении миграций.
 - Измерять длительность отката и сохранять результат в истории развёртываний.
+
+Для сквозной проверки опубликованного образа запустите вручную Actions → Verify published image on kind. Временный кластер прочитает chart из kubernetes-ops-lab и digest из gitops-values, скачает пакет GHCR с краткоживущим правом packages:read и покажет фактический образ, ревизии Argo CD и результат /health.
