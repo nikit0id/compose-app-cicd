@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portfolio
+      POSTGRES_DB: portfolio
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Missing database password}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "portfolio", "-d", "portfolio"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    image: ${API_IMAGE:?Missing immutable image reference}
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGDATABASE: portfolio
+      PGUSER: portfolio
+      PGPASSWORD: ${PGPASSWORD:?Missing database password}
+    ports: ["127.0.0.1:${API_PORT:-18080}:8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 3s
+      timeout: 4s
+      retries: 10
+  caddy:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:-localhost}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+volumes:
+  pgdata:
+  caddydata:
+  caddyconfig:
