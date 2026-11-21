@@ -2,7 +2,7 @@
 # Exercise the SSH release on a fresh GitHub-hosted Ubuntu VM.
 set -euo pipefail
 image=${1:?Pass a scanned image digest}
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "${RUNNER_TEMP:?}/release-ssh-XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/client"
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/host"
